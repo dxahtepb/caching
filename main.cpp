@@ -7,7 +7,7 @@
 std::unordered_map<std::string, std::unordered_map<std::string, int>> SETTINGS = {
         {
             "random_tests", {
-                {"test_size", 10000000},
+                {"test_size", 1000000},
                 {"cache_size", 10000},
                 {"random_min", 0},
                 {"random_max", 20000000},

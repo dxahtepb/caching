@@ -220,10 +220,6 @@ private:
 template<typename Key, typename Value, typename EntryAlloc>
 class CarCache
 {
-
-    using KeyType = Key;
-    using ValueType = Value;
-
     struct Entry
     {
         int access_bit;
@@ -433,14 +429,6 @@ private:
     }
 };
 
-
-class CartCache
-{
-public:
-
-private:
-
-};
 
 
 #endif //CACHINGPP_CACHE_H
