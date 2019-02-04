@@ -7,10 +7,10 @@
 std::unordered_map<std::string, std::unordered_map<std::string, int>> SETTINGS = {
         {
             "random_tests", {
-                {"test_size", 100000},
-                {"cache_size", 1024},
+                {"test_size", 10000000},
+                {"cache_size", 10000},
                 {"random_min", 0},
-                {"random_max", 2000},
+                {"random_max", 20000000},
             },
         },
 };
@@ -64,14 +64,19 @@ void random_tests()
     std::uniform_int_distribution<int> dist(RANDOM_MIN, RANDOM_MAX);
 
     CarCache<int, int, A> cache(CACHE_SIZE);
+    BasicLruCache<int, int, A> lru_cache(CACHE_SIZE);
+
     for (size_t i = 0; i < TEST_SIZE; ++i)
     {
         int random_page = dist(mt);
         assert(random_page == cache.get(random_page));
+        assert(random_page == lru_cache.get(random_page));
     }
 
-    std::cout << TEST_SIZE << ' ' << cache.get_cache_misses() << ' '
-              << (double) cache.get_cache_misses()/TEST_SIZE * 100 << "%\n";
+    std::cout << "CAR: " << TEST_SIZE << ' ' << cache.get_cache_misses() << ' '
+              << (double) (TEST_SIZE - cache.get_cache_misses())/TEST_SIZE * 100 << "%\n";
+    std::cout << "LRU: " << TEST_SIZE << ' ' << lru_cache.get_cache_misses() << ' '
+              << (double) (TEST_SIZE - lru_cache.get_cache_misses())/TEST_SIZE * 100 << "%\n";
 }
 
 int main()

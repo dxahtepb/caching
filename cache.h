@@ -31,7 +31,7 @@ public:
     {
         if (check_presence(key))
         {
-            list_.erase(map_[key]);
+            list_.erase(map_.at(key));
         }
         list_.push_front(key);
         map_[key] = list_.begin();
@@ -39,8 +39,10 @@ public:
 
     Key remove_lru()
     {
+        auto ret = list_.back();
         map_.erase(list_.back());
         list_.pop_back();
+        return ret;
     }
 
     void erase(Key key)
@@ -52,6 +54,70 @@ public:
 private:
     std::list<Key> list_;
     std::unordered_map<Key, typename std::list<Key>::iterator> map_;
+};
+
+template <typename Key, typename Value, typename EntryAlloc>
+class BasicLruCache
+{
+public:
+    explicit
+    BasicLruCache(size_t cache_size)
+        : cache_list_(),
+        data_(),
+        cache_misses_(0),
+        entry_alloc_(),
+        cache_size_(cache_size)
+    {}
+
+    Value get(Key key)
+    {
+        if (!check_cache_presence(key))
+        {
+            ++cache_misses_;
+            if (cache_list_.size() == cache_size_)
+            {
+                auto removed_key = cache_list_.remove_lru();
+                data_.erase(removed_key);
+            }
+            data_[key] = entry_alloc_(key);
+            cache_list_.make_mru(key);
+        }
+        else
+        {
+            cache_list_.make_mru(key);
+        }
+
+        return data_.at(key);
+    }
+
+    bool check_cache_presence(Key const & key) const
+    {
+        return data_.find(key) != data_.end();
+    }
+
+    auto get_contents_keys()
+    {
+        std::vector<Key> keys;
+        keys.reserve(data_.size());
+        for (auto & item : data_)
+        {
+            keys.push_back(item.first);
+        }
+        return keys;
+    }
+
+    uint64_t get_cache_misses()
+    {
+        return cache_misses_;
+    }
+
+private:
+    LruList<Key> cache_list_;
+    std::unordered_map<Key, Value> data_;
+    EntryAlloc entry_alloc_;
+
+    uint64_t cache_misses_;
+    size_t cache_size_;
 };
 
 
@@ -228,8 +294,8 @@ private:
     size_t capacity_;
     size_t cache_size_;
     size_t target_size_;
-    ClockList<Key> cache_recency_;
-    ClockList<Key> cache_frequency_;
+    SecondChanceList<Key> cache_recency_;
+    SecondChanceList<Key> cache_frequency_;
     LruList<Key> history_recency_;
     LruList<Key> history_frequency_;
     EntryAlloc entry_alloc_;
@@ -266,6 +332,7 @@ private:
             data_map_[victim_element].is_history = true;
             history_frequency_.make_mru(victim_element);
             cache_frequency_.remove();
+
             return true;
         }
         else
