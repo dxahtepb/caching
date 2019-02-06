@@ -13,6 +13,30 @@
 enum class ListType {SECOND_CHANCE, CLOCK};
 
 
+template <typename Key, typename Value, typename EntryAlloc>
+class BaseCache
+{
+public:
+    virtual Value get(Key key) = 0;
+    virtual bool check_cache_presence(Key const& key) const = 0;
+    virtual uint64_t get_cache_misses() const = 0;
+    virtual size_t size() const = 0;
+    virtual std::string name() const = 0;
+};
+
+
+template <typename Key>
+class BaseCacheList
+{
+public:
+    virtual void push(Key) = 0;
+    virtual void remove() = 0;
+    virtual Key head() = 0;
+    virtual size_t size() const = 0;
+    virtual void advance_clock() = 0;
+};
+
+
 template <typename Key>
 class LruList
 {
@@ -56,91 +80,14 @@ private:
     std::unordered_map<Key, typename std::list<Key>::iterator> map_;
 };
 
-template <typename Key, typename Value, typename EntryAlloc>
-class BasicLruCache
-{
-public:
-    explicit
-    BasicLruCache(size_t cache_size)
-        : cache_list_(),
-        data_(),
-        cache_misses_(0),
-        entry_alloc_(),
-        cache_size_(cache_size)
-    {}
 
-    Value get(Key key)
-    {
-        if (!check_cache_presence(key))
-        {
-            ++cache_misses_;
-            if (cache_list_.size() == cache_size_)
-            {
-                auto removed_key = cache_list_.remove_lru();
-                data_.erase(removed_key);
-            }
-            data_[key] = entry_alloc_(key);
-            cache_list_.make_mru(key);
-        }
-        else
-        {
-            cache_list_.make_mru(key);
-        }
-
-        return data_.at(key);
-    }
-
-    bool check_cache_presence(Key const & key) const
-    {
-        return data_.find(key) != data_.end();
-    }
-
-    auto get_contents_keys()
-    {
-        std::vector<Key> keys;
-        keys.reserve(data_.size());
-        for (auto & item : data_)
-        {
-            keys.push_back(item.first);
-        }
-        return keys;
-    }
-
-    uint64_t get_cache_misses()
-    {
-        return cache_misses_;
-    }
-
-private:
-    LruList<Key> cache_list_;
-    std::unordered_map<Key, Value> data_;
-    EntryAlloc entry_alloc_;
-
-    uint64_t cache_misses_;
-    size_t cache_size_;
-};
-
-
-template <typename Key>
-class BaseCacheList
-{
-public:
-    virtual void push(Key) = 0;
-    virtual void remove() = 0;
-    virtual Key head() = 0;
-    virtual size_t size() const = 0;
-    virtual void advance_clock() = 0;
-};
-
-
-//TODO: IMPLEMENT CLOCK WITH FREE BUFFERS POOL FOR T1 AND T2
 template <typename Key>
 class ClockList : BaseCacheList<Key>
 {
 public:
     ClockList()
-        : list_(),
-        clock_hand_(list_.begin())
+            : list_(),
+              clock_hand_(list_.begin())
     {
     }
 
@@ -153,6 +100,7 @@ public:
     {
         //TODO: INVALIDATED SOMETIMES :(
         clock_hand_ = list_.erase(clock_hand_);
+        advance_clock();
         if (clock_hand_ == list_.end())
         {
             clock_hand_ = list_.begin();
@@ -217,8 +165,72 @@ private:
 };
 
 
+template <typename Key, typename Value, typename EntryAlloc>
+class LruCache : public BaseCache<Key, Value, EntryAlloc>
+{
+public:
+    explicit
+    LruCache(size_t cache_size)
+            : cache_list_(),
+              data_(),
+              cache_misses_(0),
+              entry_alloc_(),
+              cache_size_(cache_size)
+    {}
+
+    Value get(Key key) override
+    {
+        if (!check_cache_presence(key))
+        {
+            ++cache_misses_;
+            if (cache_list_.size() == cache_size_)
+            {
+                auto removed_key = cache_list_.remove_lru();
+                data_.erase(removed_key);
+            }
+            data_[key] = entry_alloc_(key);
+            cache_list_.make_mru(key);
+        }
+        else
+        {
+            cache_list_.make_mru(key);
+        }
+
+        return data_.at(key);
+    }
+
+    bool check_cache_presence(Key const & key) const override
+    {
+        return data_.find(key) != data_.end();
+    }
+
+    uint64_t get_cache_misses() const override
+    {
+        return cache_misses_;
+    }
+
+    size_t size() const override
+    {
+        return data_.size();
+    }
+
+    std::string name() const override
+    {
+        return "LRU";
+    }
+
+private:
+    LruList<Key> cache_list_;
+    std::unordered_map<Key, Value> data_;
+    EntryAlloc entry_alloc_;
+
+    uint64_t cache_misses_;
+    size_t cache_size_;
+};
+
+
 template<typename Key, typename Value, typename EntryAlloc>
-class CarCache
+class CarCache : public BaseCache<Key, Value, EntryAlloc>
 {
     struct Entry
     {
@@ -231,20 +243,20 @@ public:
 
     explicit
     CarCache(size_t capacity)
-        : capacity_(capacity),
-        entry_alloc_(),
-        cache_size_(capacity / 2),
-        cache_recency_(),
-        cache_frequency_(),
-        history_frequency_(),
-        history_recency_(),
-        target_size_(0),
-        cache_misses_(0),
-        data_map_()
+            : capacity_(capacity),
+              entry_alloc_(),
+              cache_size_(capacity / 2),
+              cache_recency_(),
+              cache_frequency_(),
+              history_frequency_(),
+              history_recency_(),
+              target_size_(0),
+              cache_misses_(0),
+              data_map_()
     {
     }
 
-    Value get(Key key)
+    Value get(Key key) override
     {
         if (!check_cache_presence(key))
         {
@@ -255,10 +267,10 @@ public:
             data_map_[key].access_bit = true;
         }
 
-        return data_map_[key].value;
+        return data_map_.at(key).value;
     }
 
-    bool check_cache_presence(Key const & key) const
+    bool check_cache_presence(Key const & key) const override
     {
         if (data_map_.find(key) != data_map_.end())
         {
@@ -270,20 +282,24 @@ public:
         return false;
     }
 
-    auto get_contents_keys()
-    {
-        std::vector<Key> keys;
-        keys.reserve(data_map_.size());
-        for (auto & item : data_map_)
-        {
-            keys.push_back(item.first);
-        }
-        return keys;
-    }
-
-    uint64_t get_cache_misses()
+    uint64_t get_cache_misses() const override
     {
         return cache_misses_;
+    }
+
+    size_t size() const override
+    {
+        return cache_frequency_.size() + cache_recency_.size() + history_frequency_.size() + history_recency_.size();
+    }
+
+    size_t get_target_size()
+    {
+        return target_size_;
+    }
+
+    std::string name() const override
+    {
+        return "CAR";
     }
 
 private:
@@ -291,8 +307,8 @@ private:
     size_t capacity_;
     size_t cache_size_;
     size_t target_size_;
-    SecondChanceList<Key> cache_recency_;
-    SecondChanceList<Key> cache_frequency_;
+    ClockList<Key> cache_recency_;
+    ClockList<Key> cache_frequency_;
     LruList<Key> history_recency_;
     LruList<Key> history_frequency_;
     EntryAlloc entry_alloc_;
@@ -318,26 +334,27 @@ private:
             cache_frequency_.push(victim_element);
             cache_recency_.remove();
         }
+        return false;
     }
 
     bool evict_from_frequency_cache()
     {
-        cache_recency_.advance_clock();
+        cache_frequency_.advance_clock();
         auto victim_element = cache_frequency_.head();
         if (data_map_[victim_element].access_bit == 0)
         {
             data_map_[victim_element].is_history = true;
             history_frequency_.make_mru(victim_element);
             cache_frequency_.remove();
-
             return true;
         }
         else
         {
             data_map_[victim_element].access_bit = 0;
-            cache_frequency_.remove();
-            cache_frequency_.push(victim_element);
+//            cache_frequency_.remove();
+//            cache_frequency_.push(victim_element);
         }
+        return false;
     }
 
     void evict_entry_from_cache()
@@ -430,8 +447,10 @@ private:
     }
 };
 
+
+
 template<typename Key, typename Value, typename EntryAlloc>
-class CartCache
+class CartCache : public BaseCache<Key, Value, EntryAlloc>
 {
     struct Entry
     {
@@ -459,7 +478,7 @@ public:
     {
     }
 
-    Value get(Key key)
+    Value get(Key key) override
     {
         if (!check_cache_presence(key))
         {
@@ -473,7 +492,7 @@ public:
         return data_map_[key].value;
     }
 
-    bool check_cache_presence(Key const & key) const
+    bool check_cache_presence(Key const & key) const override
     {
         if (data_map_.find(key) != data_map_.end())
         {
@@ -485,22 +504,20 @@ public:
         return false;
     }
 
-    auto get_contents_keys()
-    {
-        std::vector<Key> keys;
-        keys.reserve(data_map_.size());
-        for (auto & item : data_map_)
-        {
-            keys.push_back(item.first);
-        }
-        return keys;
-    }
-
-    uint64_t get_cache_misses()
+    uint64_t get_cache_misses() const override
     {
         return cache_misses_;
     }
 
+    size_t size() const override
+    {
+        return data_map_.size();
+    }
+
+    std::string name() const override
+    {
+        return "CART";
+    }
 
 private:
     size_t capacity_;
