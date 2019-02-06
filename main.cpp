@@ -1,6 +1,11 @@
 #include <iostream>
 #include <cassert>
 #include <random>
+#include <fstream>
+#include <chrono>
+#include <functional>
+#include <thread>
+#include <unordered_set>
 #include "cache.h"
 
 
@@ -8,75 +13,98 @@ std::unordered_map<std::string, std::unordered_map<std::string, int>> SETTINGS =
         {
             "random_tests", {
                 {"test_size", 1000000},
-                {"cache_size", 10000},
+                {"cache_size", 128 * 1024},
                 {"random_min", 0},
-                {"random_max", 20000000},
+                {"random_max", 2000000},
             },
         },
 };
 
 struct A
 {
-    int operator() (int key) const
+    uint64_t operator() (uint64_t key) const
     {
+//        std::this_thread::sleep_for(std::chrono::nanoseconds{50});
         return key;
     }
 };
 
-void random_tests();
+template <typename ChronoTimeSignature>
+inline ChronoTimeSignature measure_time(std::function<void (void)> const& lambda)
+{
+    auto start_time = std::chrono::steady_clock::now();
+    lambda();
+    auto end_time = std::chrono::steady_clock::now();
+    return std::chrono::duration_cast<ChronoTimeSignature>(end_time - start_time);
+}
+
+void test_from_file(std::string const&);
 
 void run_tests()
 {
-    CarCache<int, int, A> cache(1024);
-
-    assert(100 == cache.get(100));
-    assert(100 == cache.get(100));
-    assert(200 == cache.get(200));
-    assert(200 == cache.get(200));
-    assert(100 == cache.get(100));
-//
-//    std::cout << 5 << ' ' << cache.get_cache_misses() << '\n';
-//
-//    for (auto & item : cache.get_contents_keys())
-//    {
-//        std::cout << item << ' ';
-//    }
-//    std::cout << '\n';
-
-    random_tests();
-
+    test_from_file("/home/student/Documents/zipf_distribution_50M2.txt");
     std::cout << "All tests OK" << std::endl;
 }
 
-void random_tests()
+void test_from_file(std::string const& file_path)
 {
-    std::cout << "random_test_started\n";
+    std::cout << "testing from file \"" << file_path << "\" started\n";
+    std::ifstream fin(file_path);
 
     auto current_settings = SETTINGS.at("random_tests");
-
-    const int RANDOM_MIN = current_settings.at("random_min");
-    const int RANDOM_MAX = current_settings.at("random_max");
-    const int TEST_SIZE = current_settings.at("test_size");
     const size_t CACHE_SIZE = current_settings.at("cache_size");
 
-    std::random_device rd;
-    std::mt19937 mt(rd());
-    std::uniform_int_distribution<int> dist(RANDOM_MIN, RANDOM_MAX);
+    std::vector<std::unique_ptr<BaseCache<uint64_t, uint64_t, A>>> caches;
+    caches.push_back(std::make_unique<CarCache<uint64_t, uint64_t, A>>(CACHE_SIZE));
+    caches.push_back(std::make_unique<LruCache<uint64_t, uint64_t, A>>(CACHE_SIZE));
 
-    CarCache<int, int, A> cache(CACHE_SIZE);
-    BasicLruCache<int, int, A> lru_cache(CACHE_SIZE);
-
-    for (size_t i = 0; i < TEST_SIZE; ++i)
+    std::unordered_map<std::string, std::chrono::nanoseconds> times;
+    for (auto const& cache : caches)
     {
-        int random_page = dist(mt);
-        assert(random_page == cache.get(random_page));
-        assert(random_page == lru_cache.get(random_page));
+        times.insert({cache->name(), std::chrono::nanoseconds{0}});
     }
 
-    std::cout << "CAR: " << TEST_SIZE << ' ' << cache.get_cache_misses() << ' '
-              << (double) (TEST_SIZE - cache.get_cache_misses())/TEST_SIZE * 100 << "%\n";
-    std::cout << "LRU: " << TEST_SIZE << ' ' << lru_cache.get_cache_misses() << ' '
-              << (double) (TEST_SIZE - lru_cache.get_cache_misses())/TEST_SIZE * 100 << "%\n";
+    std::unordered_set<uint64_t> unique_counter_set;
+
+    size_t test_size = 0;
+    while (!fin.eof())
+    {
+        if (test_size == 10 * 1000 * 1000)
+        {
+//            break;
+        }
+
+        uint64_t number = 0;
+        fin >> number;
+        unique_counter_set.insert(number);
+
+        if (test_size % (1 * 1000 * 1000) == 0)
+        {
+            std::cout << test_size << '\n';
+        }
+        ++test_size;
+
+        for (auto & cache : caches)
+        {
+            times.at(cache->name()) += measure_time<std::chrono::nanoseconds>(
+                    [number, &cache] ()
+                    {
+                        assert(number == cache->get(number));
+                    });
+        }
+    }
+
+    std::cout << unique_counter_set.size() << '\n';
+
+    for (auto const& cache : caches)
+    {
+        std::cout << cache->name() << ":  " << test_size << ' ' << cache->get_cache_misses() << ' '
+                  << (double) (test_size - cache->get_cache_misses()) / (test_size) * 100 << '%'
+                  << " duration: " << std::chrono::duration_cast<std::chrono::seconds>(times.at(cache->name())).count()
+                  << "\n";
+    }
+
+    std::cout << "testing from file \"" << file_path << "\" finished\n";
 }
 
 int main()
