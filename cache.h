@@ -9,8 +9,7 @@
 #include <unordered_map>
 #include <list>
 #include <vector>
-
-enum class ListType {SECOND_CHANCE, CLOCK};
+#include <mutex>
 
 
 template <typename Key, typename Value, typename EntryAlloc>
@@ -18,9 +17,9 @@ class BaseCache
 {
 public:
     virtual Value get(Key key) = 0;
-    virtual bool check_cache_presence(Key const& key) const = 0;
+    virtual bool check_cache_presence(Key const& key) = 0;
     virtual uint64_t get_cache_misses() const = 0;
-    virtual size_t size() const = 0;
+    virtual size_t size() = 0;
     virtual std::string name() const = 0;
 };
 
@@ -98,13 +97,12 @@ public:
 
     void remove() override
     {
-        //TODO: INVALIDATED SOMETIMES :(
         clock_hand_ = list_.erase(clock_hand_);
         advance_clock();
-        if (clock_hand_ == list_.end())
-        {
-            clock_hand_ = list_.begin();
-        }
+        //if (clock_hand_ == list_.end())
+        //{
+        //    clock_hand_ = list_.begin();
+        //}
     }
 
     Key head() override
@@ -180,6 +178,7 @@ public:
 
     Value get(Key key) override
     {
+        std::lock_guard<std::mutex> lck {mtx};
         if (!check_cache_presence(key))
         {
             ++cache_misses_;
@@ -199,7 +198,7 @@ public:
         return data_.at(key);
     }
 
-    bool check_cache_presence(Key const & key) const override
+    bool check_cache_presence(Key const & key) override
     {
         return data_.find(key) != data_.end();
     }
@@ -209,7 +208,7 @@ public:
         return cache_misses_;
     }
 
-    size_t size() const override
+    size_t size() override
     {
         return data_.size();
     }
@@ -226,6 +225,8 @@ private:
 
     uint64_t cache_misses_;
     size_t cache_size_;
+
+    std::mutex mtx;
 };
 
 
@@ -253,11 +254,13 @@ public:
               target_size_(0),
               cache_misses_(0),
               data_map_()
+//              f("log.log")
     {
     }
 
     Value get(Key key) override
     {
+        std::lock_guard<std::mutex> lock_guard{mtx};
         if (!check_cache_presence(key))
         {
             handle_cache_miss(key);
@@ -267,10 +270,16 @@ public:
             data_map_[key].access_bit = true;
         }
 
+//        f << "CAR: full size: " << size() << '\n';
+//        f << "CAR: recencyClock size: " << cache_recency_.size() << '\n';
+//        f << "CAR: frequencyClock size: " << cache_frequency_.size() << '\n';
+//        f << "CAR: recencyHistory size: " << history_recency_.size() << '\n';
+//        f << "CAR: frequencyHistory size: " << history_frequency_.size() << '\n';
+
         return data_map_.at(key).value;
     }
 
-    bool check_cache_presence(Key const & key) const override
+    bool check_cache_presence(Key const & key) override
     {
         if (data_map_.find(key) != data_map_.end())
         {
@@ -287,7 +296,7 @@ public:
         return cache_misses_;
     }
 
-    size_t size() const override
+    size_t size() override
     {
         return cache_frequency_.size() + cache_recency_.size() + history_frequency_.size() + history_recency_.size();
     }
@@ -314,18 +323,31 @@ private:
     EntryAlloc entry_alloc_;
     uint64_t cache_misses_;
 
+    std::mutex mtx;
+
     std::unordered_map<Key, Entry> data_map_;
 
-    //TODO: remove duplicate code
+//    std::ofstream f;
+
+    void remove_from_cache(ClockList<Key>& cache_list, LruList<Key>& history_list, Key const& victim_element)
+    {
+        data_map_[victim_element].is_history = true;
+        history_list.make_mru(victim_element);
+        cache_list.remove();
+    }
+
+    Key get_victim_element(ClockList<Key>& cache_list)
+    {
+        cache_list.advance_clock();
+        return cache_list.head();
+    }
+
     bool evict_from_recency_cache()
     {
-        cache_recency_.advance_clock();
-        auto victim_element = cache_recency_.head();
+        Key victim_element = get_victim_element(cache_recency_);
         if (data_map_[victim_element].access_bit == 0)
         {
-            data_map_[victim_element].is_history = true;
-            history_recency_.make_mru(victim_element);
-            cache_recency_.remove();
+            remove_from_cache(cache_recency_, history_recency_, victim_element);
             return true;
         }
         else
@@ -339,20 +361,15 @@ private:
 
     bool evict_from_frequency_cache()
     {
-        cache_frequency_.advance_clock();
-        auto victim_element = cache_frequency_.head();
+        Key victim_element = get_victim_element(cache_frequency_);
         if (data_map_[victim_element].access_bit == 0)
         {
-            data_map_[victim_element].is_history = true;
-            history_frequency_.make_mru(victim_element);
-            cache_frequency_.remove();
+            remove_from_cache(cache_frequency_, history_frequency_, victim_element);
             return true;
         }
         else
         {
             data_map_[victim_element].access_bit = 0;
-//            cache_frequency_.remove();
-//            cache_frequency_.push(victim_element);
         }
         return false;
     }
@@ -419,12 +436,12 @@ private:
         {
             if (history_recency_.check_presence(key))
             {
-                grow_recency_history();
+                grow_recency_cache();
                 history_recency_.erase(key);
             }
             else
             {
-                decrease_recency_history();
+                decrease_recency_cache();
                 history_frequency_.erase(key);
             }
 
@@ -434,13 +451,13 @@ private:
         }
     }
 
-    void grow_recency_history()
+    void grow_recency_cache()
     {
         const unsigned long long growth_factor = history_frequency_.size() / history_recency_.size();
         target_size_ = std::min(target_size_ + std::max(1ULL, growth_factor), (unsigned long long) cache_size_);
     }
 
-    void decrease_recency_history()
+    void decrease_recency_cache()
     {
         const unsigned long long growth_factor = history_recency_.size() / history_frequency_.size();
         target_size_ = std::max(target_size_ - std::max(1ULL, growth_factor), 0ULL);
